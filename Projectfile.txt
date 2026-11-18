@@ -1,0 +1,832 @@
+Before you start (Windows + Docker Desktop)
+Everything runs natively on Windows: commands in PowerShell (Windows Terminal), containers in Docker Desktop, Jenkins and Grafana as Windows services. Ubuntu is used only where Windows can't do the job:
+Practical Runs on Why
+Q1–Q5, Q7–Q9 Windows (PowerShell + Docker Desktop) All tools have Windows versions
+Q6 Ansible Ubuntu (WSL2) terminal An Ansible control node can't run on Windows
+Q10 Node Exporter Docker container (Linux) Node Exporter has no Windows build; Prometheus and Grafana stay native
+1. Install the tools (PowerShell as Administrator):
+# PowerShell (as Administrator)
+winget install --id Git.Git -e
+winget install --id Microsoft.OpenJDK.21 -e
+winget install --id Docker.DockerDesktop -e
+winget install --id Microsoft.VisualStudioCode -e
+2. Install Maven (no reliable winget package):
+1. Download the Binary zip of the latest Maven 3.9.x from maven.apache.org/download.cgi.
+2. Extract it to C:\Program Files\Maven\.
+3. Start menu → “Edit the system environment variables” → Environment Variables → under System variables select Path → New → add the bin folder, e.g. C:\Program Files\Maven\apache-maven-3.9.11\bin → OK.
+3. Verify (open a new PowerShell window):
+# PowerShell (new window, with Docker Desktop running)
+git --version
+java -version
+mvn -version
+docker version
+4. Docker Desktop settings
+• Settings → General → Use the WSL 2 based engine stays ticked (the default).
+• ELK (Q9) needs about 4 GB. Create C:\Users\<you>\.wslconfig with the lines below, then run wsl --shutdown and restart Docker Desktop.
+[wsl2]
+memory=6GB
+PowerShell tips for this guide
+• How to copy: every command box starts with a comment line saying where to run it, # PowerShell or # Ubuntu terminal. Copy the whole box and paste it there; the comment line is ignored. Boxes with file contents (Dockerfile, YAML, etc.) are named just above the box: paste those into that file.
+• Replace placeholders in CAPITALS (e.g. YOUR-USERNAME) before running.
+• Commands that keep running (logs -f, get pods -w, prometheus.exe) are in their own box. Stop them with Ctrl+C.
+• Use curl.exe, not curl. In Windows PowerShell 5.1, curl is an alias for Invoke-WebRequest.
+• Create files with VS Code (code filename) or Notepad. For files with no extension, such as Dockerfile, run notepad Dockerfile. with a trailing dot so Notepad doesn't add .txt.
+• Jenkins (Q2/Q3) and the nginx container (Q4) both use port 8080. Stop Jenkins before Q4 (see Q4).
+Q1. Version Control with Git
+1. Initialize repo and configure user (4)
+# PowerShell
+mkdir student-management
+cd student-management
+git init -b main
+git config user.name "Your Name"
+git config user.email "you@example.com"
+git config --list | Select-String user
+2. Create files and make the initial commit (5)
+# PowerShell (inside student-management)
+@'
+<!DOCTYPE html>
+<html>
+<head><title>Student Management</title><link rel="stylesheet" href="style.css"></head>
+<body>
+  <h1>Student Management System</h1>
+  <script src="app.js"></script>
+</body>
+</html>
+'@ | Set-Content index.html
+'body { font-family: Arial; background: #f4f4f4; }' | Set-Content style.css
+"console.log('App loaded');" | Set-Content app.js
+git add .
+git commit -m "Initial commit"
+git log --oneline
+Git may warn that “LF will be replaced by CRLF”. That's normal on Windows.
+3. Branch feature-login with a login form (5)
+# PowerShell
+git checkout -b feature-login
+notepad index.html
+In Notepad, paste this inside <body> just below the <h1> line, then save and close:
+<form id="loginForm">
+  <input type="text" placeholder="Username" required>
+  <input type="password" placeholder="Password" required>
+  <button type="submit">Login</button>
+</form>
+
+# PowerShell
+git add index.html
+git commit -m "Add login form"
+4. Switch to main, modify app.js, commit (4)
+# PowerShell
+git checkout main
+Add-Content app.js "function greet(){ alert('Welcome Student'); }"
+git add app.js
+git commit -m "Add greet function in app.js"
+5. Merge feature-login into main (4)
+# PowerShell
+git merge feature-login -m "Merge feature-login into main"
+git log --oneline
+The branches touched different files, so this merges without conflict.
+6. Create and resolve a merge conflict (8)
+This changes the same line (the <h1>) differently on a new branch and on main, then merges:
+# PowerShell
+git checkout -b feature-title
+(Get-Content index.html) -replace '<h1>.*</h1>', '<h1>Student Portal - Feature</h1>' | Set-Content index.html
+git commit -am "Change title in feature-title"
+git checkout main
+(Get-Content index.html) -replace '<h1>.*</h1>', '<h1>Student Portal - Main</h1>' | Set-Content index.html
+git commit -am "Change title in main"
+git merge feature-title
+git status
+The merge stops with a conflict and git status shows both modified: index.html. Inside the file the conflict looks like this (this is file content, not a command):
+<<<<<<< HEAD
+  <h1>Student Portal - Main</h1>
+=======
+  <h1>Student Portal - Feature</h1>
+>>>>>>> feature-title
+Open it with notepad index.html (or VS Code, which shows Accept Current / Incoming buttons). Keep the version you want, delete the three marker lines, save, then:
+# PowerShell
+git add index.html
+git commit -m "Resolve merge conflict in title"
+git log --graph --oneline --all
+The graph output shows the branches splitting and joining at the merge commits.
+Q2. Setting Up Jenkins + CI Job
+These steps use the Jenkins already installed on Windows (it runs as a Windows service). Build steps use Windows commands (bat), not Linux sh.
+1. Install and start Jenkins, create admin user, install suggested plugins (6)
+Jenkins is already installed, so check that it's running. Open Services (Win + R → services.msc) → Jenkins should be Running. Or in PowerShell as Administrator:
+# PowerShell (as Administrator)
+Get-Service jenkins
+Start-Service jenkins
+First-time setup only: show the initial admin password. Depending on the Jenkins version, one of these two paths exists, so one line may show an error:
+# PowerShell (as Administrator)
+Get-Content "C:\ProgramData\Jenkins\.jenkins\secrets\initialAdminPassword"
+Get-Content "C:\Program Files\Jenkins\secrets\initialAdminPassword"
+If you already finished the setup wizard earlier, just log in at http://localhost:8080 and skip the list below. For the practical record, screenshot the dashboard and Manage Jenkins → Plugins → Installed plugins.
+1. Open http://localhost:8080 and paste the initial admin password.
+2. Click Install suggested plugins and wait for it to finish.
+3. Fill in the Create First Admin User form (username, password, name, email) → Save and Continue → Start using Jenkins.
+Configure Maven and Git in Jenkins (needed on Windows)
+1. Install Git for Windows if you don't have it (git-scm.com).
+2. Manage Jenkins → Tools:
+o Git installations → Path to Git executable: C:\Program Files\Git\bin\git.exe (only if plain git doesn't work).
+o Maven installations → Add Maven → Name: Maven3 → tick Install automatically (pick the latest 3.9.x) → Save.
+3. Jenkins uses its own Java (17 or 21) to run the build, so you don't need a separate JDK setting.
+Prepare a sample Java Maven project (used in Q2 and Q3)
+Generate the project and fix its Java version. Every -D... argument is in quotes because PowerShell would otherwise split it at the dot. The archetype targets Java 1.7, which JDK 17/21 can't compile, so the -replace line changes it to 17.
+# PowerShell
+mvn archetype:generate "-DgroupId=com.demo" "-DartifactId=java-demo" "-DarchetypeArtifactId=maven-archetype-quickstart" "-DarchetypeVersion=1.4" "-DinteractiveMode=false"
+cd java-demo
+(Get-Content pom.xml) -replace '>1.7<', '>17<' | Set-Content pom.xml
+Select-String compiler pom.xml
+mvn clean package
+Both compiler lines should show 17, and the build should end with BUILD SUCCESS. Now create an empty repo named java-demo on GitHub, put your GitHub username in place of YOUR-USERNAME, and push:
+# PowerShell (inside java-demo)
+git init -b main
+git add .
+git commit -m "Sample Maven project"
+git remote add origin "https://github.com/YOUR-USERNAME/java-demo.git"
+git push -u origin main
+2. Create a Freestyle job named java-build-job (4)
+1. Dashboard → New Item.
+2. Name: java-build-job → select Freestyle project → OK.
+3. Connect the job to the Java project (6)
+1. Source Code Management → select Git.
+2. Repository URL: https://github.com/YOUR-USERNAME/java-demo.git
+3. Branch Specifier: */main (add credentials only if the repo is private).
+4. Configure triggers and build steps (7)
+• Build Triggers → tick Poll SCM → Schedule: H/2 * * * * (checks Git every 2 minutes).
+• Alternative: tick GitHub hook trigger for GITScm polling and add a GitHub webhook to http://<public-url>/github-webhook/. Your Windows PC isn't reachable from GitHub, so this needs a tunnel such as ngrok. Poll SCM is simpler.
+• Build Steps → Add build step → Invoke top-level Maven targets → Maven Version: Maven3 → Goals: clean compile package.
+Alternative: Execute Windows batch command (works only if Maven is on the Windows PATH and the Jenkins service was restarted afterwards):
+mvn clean compile
+mvn package
+• Optional Post-build Actions → Archive the artifacts → target/*.jar.
+• Click Save.
+5. Run the build and show Console Output (7)
+1. Click Build Now.
+2. Open the build (#1) in Build History → Console Output. It should end with BUILD SUCCESS and Finished: SUCCESS.
+Common failures and fixes:
+Error in console Fix
+'mvn' is not recognized as an internal or external command Use Invoke top-level Maven targets with Maven3, configured under Manage Jenkins → Tools
+Cannot run program "git.exe" Install Git for Windows, or set the git.exe path under Manage Jenkins → Tools
+Couldn't find any revision to build Branch is main, not master: set Branch Specifier to */main
+Source option 7 is no longer supported Set maven.compiler.source/target in pom.xml to 17 (the -replace step above)
+Test failure Fix the test, or temporarily add -DskipTests to the goals
+Re-run Build Now after the fix and capture the successful console output.
+Q3. CI/CD Pipeline with Jenkins and Maven
+Use the same java-demo repo from Q2.
+1. Create a Pipeline job named cicd-pipeline (4)
+1. Dashboard → New Item → name cicd-pipeline → Pipeline → OK.
+2. Under Pipeline, set Definition = Pipeline script from SCM, SCM = Git, Repository URL = your repo, Branch = */main, Script Path = Jenkinsfile.
+3. Under Build Triggers, tick Poll SCM with H/2 * * * * (needed for part 4) → Save.
+2. Write the Jenkinsfile (16)
+Create Jenkinsfile (no extension) in the root of the java-demo folder, e.g. code Jenkinsfile or notepad Jenkinsfile.
+This version is for Jenkins on Windows (bat steps, Maven3 from Manage Jenkins → Tools):
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven3'
+    }
+
+    environment {
+        DEPLOY_DIR = 'C:\\deploy'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage('Build') {
+            steps {
+                bat 'mvn clean compile'
+            }
+        }
+        stage('Test') {
+            steps {
+                bat 'mvn test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+        stage('Package') {
+            steps {
+                bat 'mvn package -DskipTests'
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+        stage('Deploy') {
+            steps {
+                bat '''
+                    if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
+                    copy /Y target\\*.jar "%DEPLOY_DIR%\\"
+                    dir "%DEPLOY_DIR%"
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo 'Pipeline completed successfully!' }
+        failure { echo 'Pipeline failed.' }
+    }
+}
+The double backslashes are Groovy escaping; Windows receives C:\deploy and target\*.jar. After a run, open C:\deploy in File Explorer to show the deployed .jar.
+Optional, for a Tomcat deploy instead: set <packaging>war</packaging> in pom.xml and use this Deploy stage in the Jenkinsfile. Adjust the Tomcat folder to yours; Tomcat must run on a port other than 8080, which Jenkins uses.
+        stage('Deploy') {
+            steps {
+                bat 'copy /Y target\\*.war "C:\\Program Files\\Apache Software Foundation\\Tomcat 10.1\\webapps"'
+            }
+        }
+Push the Jenkinsfile to GitHub:
+# PowerShell (inside java-demo)
+git add Jenkinsfile
+git commit -m "Add Jenkinsfile"
+git push
+3. Run the pipeline and show Stage View (5)
+1. Open cicd-pipeline → Build Now.
+2. The job page shows the Stage View grid: Checkout → Build → Test → Package → Deploy, each green with its time.
+3. If no Stage View appears, install Pipeline: Stage View (or Pipeline Graph View) from Manage Jenkins → Plugins.
+4. Demonstrate automatic trigger on code change (5)
+# PowerShell (inside java-demo)
+Add-Content src\main\java\com\demo\App.java "// trigger build"
+git commit -am "Trigger pipeline"
+git push
+Within 2 minutes a new build starts on its own. Open the build → its cause reads Started by an SCM change. Use Git Polling Log on the job page as extra proof. With a GitHub webhook instead of polling, the build starts within seconds.
+Q4. Docker Basics
+First stop Windows Jenkins, which also uses port 8080. After Q4, start it again with Start-Service jenkins.
+# PowerShell (as Administrator)
+Stop-Service jenkins
+1. Pull nginx and run it on port 8080 (6)
+# PowerShell
+docker --version
+docker pull nginx
+docker run -d --name my-nginx -p 8080:80 nginx
+curl.exe http://localhost:8080
+Open http://localhost:8080 in a browser → you see the Welcome to nginx! page.
+2. Create a simple web app (5)
+# PowerShell
+mkdir hello-docker
+cd hello-docker
+@'
+<!DOCTYPE html>
+<html>
+<head><title>Docker App</title></head>
+<body><h1>Hello Docker</h1></body>
+</html>
+'@ | Set-Content index.html
+3. Write the Dockerfile (8)
+Create a file named Dockerfile (no extension) in the same folder: notepad Dockerfile. (the trailing dot stops Notepad adding .txt), or code Dockerfile.
+# Base image
+FROM nginx:alpine
+
+# Metadata
+LABEL maintainer="you@example.com"
+
+# Replace the default nginx page with our app
+COPY index.html /usr/share/nginx/html/index.html
+
+# nginx listens on port 80
+EXPOSE 80
+
+# Run nginx in the foreground
+CMD ["nginx", "-g", "daemon off;"]
+4. Build as my-web-app:v1 and run on port 8081 (6)
+# PowerShell (inside hello-docker)
+docker build -t my-web-app:v1 .
+docker run -d --name web-app -p 8081:80 my-web-app:v1
+curl.exe http://localhost:8081
+Open http://localhost:8081 → the page shows Hello Docker.
+5. Management commands (5)
+docker ps lists running containers, ps -a includes stopped ones, images lists local images, and logs prints a container's access log:
+# PowerShell
+docker ps
+docker ps -a
+docker images
+docker logs web-app
+Follow logs live. This keeps running: open http://localhost:8080 a few times to see new lines, then press Ctrl+C.
+# PowerShell
+docker logs -f my-nginx
+Stop and remove both containers:
+# PowerShell
+docker stop web-app my-nginx
+docker rm web-app my-nginx
+docker ps -a
+Q5. Docker Compose – Multi-Container App
+This uses PHP + Apache for the web app (it listens on port 80, matching 8000:80).
+1. Create the project (5)
+# PowerShell
+mkdir compose-app
+cd compose-app
+mkdir src, db
+code .
+Create these four files (in the VS Code window that code . opened, or Notepad):
+compose-app/
+├── docker-compose.yml
+├── Dockerfile
+├── src/index.php
+└── db/init.sql
+Dockerfile:
+FROM php:8.2-apache
+RUN docker-php-ext-install mysqli
+COPY src/ /var/www/html/
+EXPOSE 80
+db/init.sql (runs automatically on the first start of MySQL):
+CREATE TABLE IF NOT EXISTS students (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(50),
+  course VARCHAR(50)
+);
+INSERT INTO students (name, course) VALUES
+ ('Asha', 'MSc CS'), ('Rahul', 'MSc CS'), ('Neha', 'MCA');
+src/index.php:
+<?php
+$conn = new mysqli('db', 'root', 'rootpass', 'studentdb');
+if ($conn->connect_error) {
+    die('DB connection failed: ' . $conn->connect_error);
+}
+echo "<h2>Connected to MySQL successfully</h2>";
+$result = $conn->query('SELECT * FROM students');
+echo "<table border='1'><tr><th>ID</th><th>Name</th><th>Course</th></tr>";
+while ($row = $result->fetch_assoc()) {
+    echo "<tr><td>{$row['id']}</td><td>{$row['name']}</td><td>{$row['course']}</td></tr>";
+}
+echo "</table>";
+$conn->close();
+?>
+2. Write docker-compose.yml (12)
+services:
+  web:
+    build: .
+    ports:
+      - "8000:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: studentdb
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpass"]
+      interval: 10s
+      retries: 10
+
+volumes:
+  db_data:
+The healthcheck makes web wait until MySQL is actually ready, not just started.
+3. Start and verify both containers (5)
+# PowerShell (inside compose-app)
+docker compose up -d --build
+docker compose ps
+docker ps
+Both web and db should show running, and db also healthy.
+4. Verify the app reads from the database (5)
+Open http://localhost:8000 → the page shows Connected to MySQL successfully and the students table. Check from the DB side too:
+# PowerShell (inside compose-app)
+docker compose exec db mysql -uroot -prootpass -e "SELECT * FROM studentdb.students;"
+5. Scale down, logs, bring down with volumes (3)
+Scale web down to 0 replicas, check, bring it back to 1, and view all logs:
+# PowerShell (inside compose-app)
+docker compose up -d --scale web=0
+docker compose ps
+docker compose up -d --scale web=1
+docker compose logs
+Follow one service's logs (keeps running; press Ctrl+C to stop):
+# PowerShell (inside compose-app)
+docker compose logs -f web
+Bring everything down, including the db_data volume. Afterwards docker volume ls no longer lists it:
+# PowerShell (inside compose-app)
+docker compose down -v
+docker volume ls
+web publishes a fixed host port (8000), so it can't scale above 1 replica on one machine.
+Q6. Introduction to Ansible
+This is the one practical that needs Ubuntu. Ansible's control node only runs on Linux, so it runs in Ubuntu on WSL2. The 2 managed nodes are two Ubuntu containers in Docker Desktop with SSH: web1 (SSH port 2221, web 8091) and web2 (SSH 2222, web 8092).
+Set up Ubuntu (once)
+1. PowerShell as Administrator: wsl --install -d Ubuntu-24.04. Restart if asked, then open Ubuntu from the Start menu and create a Linux username and password.
+2. Docker Desktop → Settings → Resources → WSL integration → turn on Ubuntu-24.04 → Apply & restart. Now docker works inside Ubuntu too.
+3. Run every Q6 command below in the Ubuntu terminal, not PowerShell.
+0. Create the two managed nodes
+# Ubuntu terminal
+mkdir -p ~/ansible-lab/node
+cd ~/ansible-lab
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+cp ~/.ssh/id_ed25519.pub node/
+nano node/Dockerfile
+Paste the Dockerfile below into nano, then save with Ctrl+O, Enter, and exit with Ctrl+X.
+node/Dockerfile:
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y openssh-server python3 sudo \
+ && useradd -m -s /bin/bash ansible \
+ && echo 'ansible ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ansible \
+ && mkdir -p /var/run/sshd
+COPY id_ed25519.pub /home/ansible/.ssh/authorized_keys
+RUN chown -R ansible:ansible /home/ansible/.ssh \
+ && chmod 700 /home/ansible/.ssh && chmod 600 /home/ansible/.ssh/authorized_keys
+EXPOSE 22 80
+CMD ["/usr/sbin/sshd", "-D"]
+Build the image and start the two nodes:
+# Ubuntu terminal
+cd ~/ansible-lab
+docker build -t ansible-node ./node
+docker run -d --name web1 -p 2221:22 -p 8091:80 ansible-node
+docker run -d --name web2 -p 2222:22 -p 8092:80 ansible-node
+docker ps
+1. Install Ansible on the control node (4)
+# Ubuntu terminal
+sudo apt update
+sudo apt install -y software-properties-common
+sudo add-apt-repository --yes --update ppa:ansible/ansible
+sudo apt install -y ansible
+ansible --version
+Test SSH to both nodes (the key was built into the image, so no password is needed):
+# Ubuntu terminal
+ssh -p 2221 -o StrictHostKeyChecking=no ansible@localhost hostname
+ssh -p 2222 -o StrictHostKeyChecking=no ansible@localhost hostname
+The ansible user in the containers already has passwordless sudo.
+2. Inventory and connectivity test (5)
+Create the two files below in ~/ansible-lab (e.g. nano ~/ansible-lab/inventory.ini).
+inventory.ini:
+[webservers]
+web1 ansible_host=127.0.0.1 ansible_port=2221
+web2 ansible_host=127.0.0.1 ansible_port=2222
+
+[webservers:vars]
+ansible_user=ansible
+ansible_python_interpreter=/usr/bin/python3
+ansible.cfg (so you don't need -i every time):
+[defaults]
+inventory = inventory.ini
+host_key_checking = False
+
+# Ubuntu terminal
+cd ~/ansible-lab
+ansible all -m ping
+Expected: web1 | SUCCESS => {"ping": "pong"} and the same for web2.
+3. Playbook install-packages.yml (12)
+First create files/index.html (the page Ansible will copy), then open the playbook file:
+# Ubuntu terminal
+cd ~/ansible-lab
+mkdir -p files
+echo "<h1>Apache deployed by Ansible</h1>" > files/index.html
+nano install-packages.yml
+install-packages.yml (paste into nano, save with Ctrl+O, exit with Ctrl+X):
+---
+- name: Configure web servers
+  hosts: webservers
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - apache2
+          - curl
+          - git
+          - vim
+        state: present
+
+    - name: Ensure apache2 is started and enabled
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Copy custom index.html
+      copy:
+        src: files/index.html
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+cache_valid_time stops the cache update from counting as a change on every run, which matters for the idempotency check.
+4. Run the playbook (5)
+# Ubuntu terminal
+cd ~/ansible-lab
+ansible-playbook install-packages.yml --syntax-check
+ansible-playbook install-packages.yml
+The PLAY RECAP shows ok=5 changed=4 (or similar) for each host with failed=0.
+5. Verify Apache and prove idempotency (4)
+• Open http://localhost:8091 (web1) and http://localhost:8092 (web2) in your Windows browser → the custom page appears. Or: ansible all -a "curl -s localhost".
+• Run the playbook again:
+# Ubuntu terminal
+cd ~/ansible-lab
+ansible-playbook install-packages.yml
+The recap now shows changed=0 for both hosts: Ansible saw everything was already in the desired state and changed nothing.
+Q7. Kubernetes Basics
+These steps use the Kubernetes built into Docker Desktop (a one-node cluster). kubectl comes with Docker Desktop and works in PowerShell.
+Setup (once)
+1. Docker Desktop → Settings → Kubernetes → tick Enable Kubernetes.
+2. If asked for a cluster type, choose Kubeadm (single node; NodePorts open on localhost).
+3. Apply & restart and wait until the Kubernetes icon at the bottom left turns green (a few minutes).
+Then point kubectl at it and make a folder for the YAML files:
+# PowerShell
+kubectl config use-context docker-desktop
+kubectl version
+mkdir k8s-lab
+cd k8s-lab
+1. Check cluster status (3)
+# PowerShell
+kubectl cluster-info
+kubectl get nodes
+The node's STATUS should be Ready.
+2. Create a Pod imperatively (5)
+# PowerShell
+kubectl run my-pod --image=nginx
+kubectl get pods
+kubectl get pods -o wide
+my-pod should show Running; -o wide adds the pod IP and node.
+3. Deployment with 3 replicas from YAML (8)
+deployment.yaml (in k8s-lab, e.g. notepad deployment.yaml):
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-deployment
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+          ports:
+            - containerPort: 80
+
+# PowerShell (inside k8s-lab)
+kubectl apply -f deployment.yaml
+kubectl get deployments
+kubectl get pods -l app=web
+Three web-deployment-... pods should be Running.
+4. NodePort Service and browser access (8)
+service.yaml (in k8s-lab, e.g. notepad service.yaml):
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+spec:
+  type: NodePort
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+
+# PowerShell (inside k8s-lab)
+kubectl apply -f service.yaml
+kubectl get svc web-service
+kubectl get nodes -o wide
+PORT(S) shows 80:30080/TCP, and the node's INTERNAL-IP is the Node IP. (Imperative alternative to the YAML: kubectl expose deployment web-deployment --type=NodePort --port=80.)
+On Docker Desktop the node is reached through localhost, so open http://localhost:30080 in your Windows browser → nginx welcome page. For the record, write it as NodeIP:NodePort, e.g. <INTERNAL-IP>:30080, and note that Docker Desktop maps it to localhost.
+5. Required outputs (6)
+# PowerShell
+kubectl get pods
+kubectl get deployments
+kubectl get services
+kubectl describe pod my-pod
+describe pod shows the node, IP, container image, state, and the Events list (Scheduled, Pulling, Pulled, Created, Started).
+Q8. Kubernetes Scaling, Rolling Updates & Rollbacks
+Setup: create my-app (if not already running)
+# PowerShell
+kubectl create deployment my-app --image=nginx:1.25 --replicas=2
+kubectl annotate deployment/my-app kubernetes.io/change-cause="Initial deploy nginx:1.25"
+kubectl get deployment my-app
+The container inside is named nginx (from the image name); set image uses that name.
+1. Scale from 2 to 5 replicas (5)
+# PowerShell
+kubectl scale deployment/my-app --replicas=5
+kubectl get deployment my-app
+kubectl get pods -l app=my-app
+The deployment shows READY 5/5 and five pods are Running.
+2. Rolling update to nginx:1.27 (8)
+# PowerShell
+kubectl set image deployment/my-app nginx=nginx:1.27
+kubectl annotate deployment/my-app kubernetes.io/change-cause="Update to nginx:1.27" --overwrite
+Kubernetes replaces pods gradually (by default max 25% unavailable / 25% surge), so the app stays up during the update.
+3. Monitor the rollout (5)
+Run this right after set image. It waits until the rollout finishes and prints deployment "my-app" successfully rolled out:
+# PowerShell
+kubectl rollout status deployment/my-app
+To watch pods change live, open a second PowerShell window before running set image. Old pods go Terminating and new ones Running; press Ctrl+C to stop watching.
+# PowerShell (second window)
+kubectl get pods -w
+4. Rollout history (4)
+# PowerShell
+kubectl rollout history deployment/my-app
+kubectl rollout history deployment/my-app --revision=2
+The history lists revision 1 (“Initial deploy nginx:1.25”) and revision 2 (“Update to nginx:1.27”). --revision=2 shows the details of one revision.
+5. Roll back and verify the image (8)
+# PowerShell
+kubectl rollout undo deployment/my-app
+kubectl rollout status deployment/my-app
+kubectl describe deployment my-app | Select-String Image
+kubectl get deployment my-app -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl rollout history deployment/my-app
+Both image checks print nginx:1.25, and in the history revision 1 has become revision 3. To roll back to a specific revision instead: kubectl rollout undo deployment/my-app --to-revision=1.
+Q9. Centralized Logging with ELK Stack
+Runs all three with Docker Compose, security turned off for a lab setup. Keep all three on the same version. Needs about 4 GB free RAM.
+1. Install and start Elasticsearch, Logstash, Kibana (8)
+# PowerShell
+mkdir elk
+cd elk
+mkdir logstash\pipeline, logs
+code .
+Create docker-compose.yml and logstash/pipeline/logstash.conf (part 2) in the elk folder before starting.
+docker-compose.yml:
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.17.0
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline
+      - ./logs:/logs
+    ports:
+      - "5044:5044"
+    depends_on:
+      - elasticsearch
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+
+volumes:
+  es_data:
+With both files in place, start the stack:
+# PowerShell (inside elk)
+docker compose up -d
+docker compose ps
+Wait about a minute for Elasticsearch to start, then check it. The first command returns JSON with the cluster name and version:
+# PowerShell
+curl.exe http://localhost:9200
+curl.exe "http://localhost:9200/_cluster/health?pretty"
+If the Elasticsearch container keeps exiting with a vm.max_map_count error, run this once, then docker compose up -d again:
+# PowerShell
+wsl -d docker-desktop sysctl -w vm.max_map_count=262144
+2. Logstash pipeline (8)
+logstash/pipeline/logstash.conf:
+input {
+  file {
+    path => "/logs/access.log"
+    start_position => "beginning"
+    sincedb_path => "/dev/null"
+  }
+  beats {
+    port => 5044
+  }
+}
+
+filter {
+  grok {
+    match => { "message" => "%{COMBINEDAPACHELOG}" }
+    ecs_compatibility => disabled
+  }
+  date {
+    match => [ "timestamp", "dd/MMM/yyyy:HH:mm:ss Z" ]
+  }
+  mutate {
+    convert => { "response" => "integer" "bytes" => "integer" }
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => ["http://elasticsearch:9200"]
+    index => "logs-%{+YYYY.MM.dd}"
+  }
+  stdout { codec => rubydebug }
+}
+• Input: reads the log file (and also accepts Filebeat on 5044).
+• Filter: grok splits each Apache line into fields (clientip, verb, request, response, bytes); date sets the event time; mutate makes status a number.
+• Output: sends to Elasticsearch, one index per day.
+3. Generate sample Apache logs (4)
+gen_logs.ps1 (in the elk folder):
+$pages = "/index.html", "/login", "/api/students", "/about", "/contact"
+$inv   = [Globalization.CultureInfo]::InvariantCulture
+$zone  = (Get-Date).ToString("zzz").Replace(":", "")     # e.g. +0530
+
+$lines = 1..200 | ForEach-Object {
+    $ip     = "192.168.1.$(Get-Random -Minimum 1 -Maximum 51)"
+    $page   = $pages | Get-Random
+    $status = if ((Get-Random -Maximum 5) -eq 0) { 500 } else { 200 }
+    $ts     = (Get-Date).ToString("dd/MMM/yyyy:HH:mm:ss", $inv) + " $zone"
+    "$ip - - [$ts] `"GET $page HTTP/1.1`" $status $(Get-Random -Maximum 5000) `"-`" `"Mozilla/5.0`""
+}
+$lines | Add-Content -Path logs\access.log -Encoding ascii
+"Generated $((Get-Content logs\access.log).Count) lines"
+Run the script, wait a few seconds, then check that a logs-YYYY.MM.dd index appears:
+# PowerShell (inside elk)
+powershell -ExecutionPolicy Bypass -File .\gen_logs.ps1
+curl.exe "http://localhost:9200/_cat/indices?v"
+To watch Logstash parse the events (keeps running; press Ctrl+C to stop):
+# PowerShell (inside elk)
+docker compose logs -f logstash
+About 1 in 5 lines are status 500, the rest 200.
+4. Kibana data view for logs-* (5)
+1. Open http://localhost:5601 (wait 1–2 minutes after start).
+2. Menu → Stack Management → Data Views → Create data view.
+3. Name: logs, Index pattern: logs-*, Timestamp field: @timestamp → Save data view to Kibana.
+5. Discover search and visualization (5)
+In Discover (data view logs, time range “Last 24 hours”):
+• Total log count: the hit count at the top, e.g. “200 hits”.
+• Errors only: query response : 500 → about 40 hits.
+• Success only: query response : 200 → about 160 hits.
+Visualization: Menu → Visualize Library → Create visualization → Lens:
+1. Chart type Pie (or Bar).
+2. Drag response into Slice by and keep Count of records as the metric → one slice for 200, one for 500.
+3. Add a Metric visualization with Count of records for the total.
+4. Save both and, optionally, add them to a dashboard.
+Q10. Monitoring with Prometheus and Grafana
+Prometheus and Grafana run natively on Windows. Node Exporter has no Windows build, so it runs as a Docker container on port 9100 and reports the Docker Desktop Linux VM's CPU, memory, disk and network. Dashboard 1860 is built for Node Exporter, so stick with it rather than windows_exporter. Versions are examples; take the latest from prometheus.io/download if a link 404s.
+1. Install and start Prometheus (5)
+# PowerShell
+$ProgressPreference = 'SilentlyContinue'
+$v = "3.5.0"
+cd $HOME
+Invoke-WebRequest "https://github.com/prometheus/prometheus/releases/download/v$v/prometheus-$v.windows-amd64.zip" -OutFile prometheus.zip
+Expand-Archive prometheus.zip -DestinationPath C:\
+Rename-Item "C:\prometheus-$v.windows-amd64" "prometheus"
+cd C:\prometheus
+.\prometheus.exe --version
+Edit prometheus.yml (part 2), then start Prometheus. It keeps running, so leave this window open; closing it stops Prometheus.
+# PowerShell (window 1, keep open)
+cd C:\prometheus
+.\prometheus.exe --config.file=prometheus.yml
+Allow it if Windows Firewall asks. Check it from a second window; it should print “Prometheus Server is Ready.” Then open http://localhost:9090 → Prometheus UI.
+# PowerShell (window 2)
+curl.exe http://localhost:9090/-/ready
+2. Configure prometheus.yml (7)
+Replace the contents of C:\prometheus\prometheus.yml (notepad C:\prometheus\prometheus.yml):
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "node_exporter"
+    static_configs:
+      - targets: ["localhost:9100"]
+Check the file from window 2. Then restart Prometheus: press Ctrl+C in window 1 and run its start command again.
+# PowerShell (window 2)
+cd C:\prometheus
+.\promtool.exe check config prometheus.yml
+3. Run Node Exporter and check targets (5)
+# PowerShell (window 2)
+docker run -d --name node-exporter -p 9100:9100 --pid=host -v "/:/host:ro" quay.io/prometheus/node-exporter:latest --path.rootfs=/host
+docker ps
+curl.exe -s http://localhost:9100/metrics | Select-Object -First 10
+In the Prometheus UI → Status → Target health (called Targets in older versions): both prometheus and node_exporter show UP. Try a query in the Query tab, e.g. node_memory_MemAvailable_bytes or up.
+4. Install Grafana and add Prometheus as a data source (5)
+1. Download the Windows installer (.msi) of Grafana OSS from grafana.com/grafana/download and run it. It installs Grafana as a Windows service on port 3000.
+2. Check it's running: Get-Service grafana in PowerShell.
+3. Open http://localhost:3000, log in with admin / admin, set a new password.
+4. Connections → Data sources → Add data source → Prometheus.
+5. Prometheus server URL: http://localhost:9090 → Save & test → “Successfully queried the Prometheus API.”
+5. Import dashboard 1860 – Node Exporter Full (8)
+1. Dashboards → New → Import.
+2. Enter 1860 → Load.
+3. Select your Prometheus data source → Import.
+4. At the top, pick Job = node_exporter and Host = localhost:9100; set time range to Last 15 minutes.
+The dashboard shows live panels for CPU Busy / CPU Basic, RAM Used / Memory Basic, Disk Space Used / Disk IOps, and Network Traffic. To make the graphs move, start a CPU load in the Docker VM:
+# PowerShell
+docker run -d --name cpuload alpine sh -c "while true; do :; done"
+Watch CPU Busy rise for a minute, then stop the load:
+# PowerShell
+docker rm -f cpuload
