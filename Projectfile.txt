@@ -830,3 +830,789 @@ docker run -d --name cpuload alpine sh -c "while true; do :; done"
 Watch CPU Busy rise for a minute, then stop the load:
 # PowerShell
 docker rm -f cpuload
+
+
+
+
+
+
+Practical 6 — Create Two Ubuntu Docker Containers for Ansible**
+
+
+Since you're using **Windows 11 + Docker Desktop + WSL Ubuntu**, I'll show you exactly how to create two Ubuntu containers named web1 and web2.
+
+
+These containers will act as your **Ansible Managed Nodes**.
+
+
+## **What we're creating**
+
+
+## **Step 1 — Open Ubuntu WSL**
+
+
+Open **Ubuntu** from the Windows Start menu.
+
+
+Make sure Docker Desktop is running.
+
+
+In Docker Desktop, go to **Settings → Resources → WSL Integration**, enable your Ubuntu distribution, and click Apply & Restart.
+
+
+In your Ubuntu terminal, run:
+docker --version
+docker ps
+
+
+If these commands work, you're ready.
+
+
+## **Step 2 — Create a project folder**
+
+
+Run the following in Ubuntu:
+mkdir -p ~/ansible-lab/node
+cd ~/ansible-lab
+
+
+Check your location:
+pwd
+
+
+Expected:
+/home/yourusername/ansible-lab
+
+
+## **Step 3 — Create an SSH key**
+
+
+Ansible needs SSH to connect to the containers.
+
+
+Run:
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+
+
+If it says the key already exists, do not overwrite it. You can reuse the existing key.
+
+
+Copy the public key into your Docker project:
+cp ~/.ssh/id_ed25519.pub node/
+
+
+Your folder should now contain:
+ansible-lab/
+└── node/
+    └── id_ed25519.pub
+
+
+## **Step 4 — Create a Dockerfile**
+
+
+Run:
+nano node/Dockerfile
+
+
+Paste:
+FROM ubuntu:22.04
+
+
+RUN apt-get update && \
+    apt-get install -y openssh-server python3 sudo && \
+    useradd -m -s /bin/bash ansible && \
+    echo 'ansible ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ansible && \
+    mkdir -p /var/run/sshd /home/ansible/.ssh
+
+
+COPY id_ed25519.pub /home/ansible/.ssh/authorized_keys
+
+
+RUN chown -R ansible:ansible /home/ansible/.ssh && \
+    chmod 700 /home/ansible/.ssh && \
+    chmod 600 /home/ansible/.ssh/authorized_keys
+
+
+EXPOSE 22 80
+
+
+CMD ["/usr/sbin/sshd", "-D"]
+
+
+Save the file:
+
+
+1. Press Ctrl + O.
+2. Press Enter.
+3. Press Ctrl + X.
+
+
+This Dockerfile creates an Ubuntu container with SSH, Python, and a user named ansible who can run sudo without a password. It is for a local practical lab only.
+
+
+## **Step 5 — Build the Ubuntu image**
+
+
+Make sure you're inside ~/ansible-lab.
+
+
+Run:
+docker build -t ansible-node ./node
+
+
+Docker will download Ubuntu 22.04 and install the packages.
+
+
+Verify the image:
+docker images
+
+
+You should see an image named:
+ansible-node
+
+
+## **Step 6 — Create Ubuntu container 1 (web1)**
+
+
+Run:
+docker run -d --name web1 -p 2221:22 -p 8091:80 ansible-node
+
+
+This creates your first Ubuntu container.
+
+
+| Port | Purpose        |
+| ---- | -------------- |
+| 2221 | SSH connection |
+| 8091 | Apache webpage |
+
+
+## **Step 7 — Create Ubuntu container 2 (web2)**
+
+
+Run:
+docker run -d --name web2 -p 2222:22 -p 8092:80 ansible-node
+
+
+Now you have two separate Ubuntu containers.
+
+
+## **Step 8 — Verify both containers**
+
+
+Run:
+docker ps
+
+
+Expected output will resemble:
+NAMES   IMAGE          PORTS
+web1    ansible-node   2221->22, 8091->80
+web2    ansible-node   2222->22, 8092->80
+
+
+**Expected container status**
+
+
+Running
+
+
+**web1**
+
+
+Ubuntu 22.04 • SSH 2221 • HTTP 8091
+
+
+**web2**
+
+
+Ubuntu 22.04 • SSH 2222 • HTTP 8092
+
+
+Illustrative status. Confirm both are running using docker ps.
+
+
+## **Step 9 — Enter the Ubuntu containers**
+
+
+To enter the first container:
+docker exec -it web1 bash
+
+
+Check its operating system:
+cat /etc/os-release
+
+
+Expected:
+PRETTY_NAME="Ubuntu 22.04.x LTS"
+
+
+Exit:
+exit
+
+
+To enter the second container:
+docker exec -it web2 bash
+
+
+Exit again using exit.
+
+
+## **Step 10 — Test SSH connections**
+
+
+From your **WSL Ubuntu terminal**, run:
+ssh -p 2221 ansible@localhost hostname
+
+
+Accept the host key when prompted, after confirming you're connecting to your own container.
+
+
+Then:
+ssh -p 2222 ansible@localhost hostname
+
+
+Both commands should connect and print their respective container hostnames.
+
+
+These two containers are now ready to act as Ansible managed nodes.
+
+
+## **Step 11 — Prepare Ansible inventory**
+
+
+Create the inventory file:
+cd ~/ansible-lab
+nano inventory.ini
+
+
+Paste:
+[webservers]
+web1 ansible_host=127.0.0.1 ansible_port=2221
+web2 ansible_host=127.0.0.1 ansible_port=2222
+
+
+[webservers:vars]
+ansible_user=ansible
+ansible_python_interpreter=/usr/bin/python3
+
+
+Save the file.
+
+
+Install Ansible in WSL if you haven't already:
+sudo apt update
+sudo apt install ansible -y
+
+
+Test both containers:
+ansible all -i inventory.ini -m ping
+
+
+Expected:
+web1 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+
+
+web2 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+
+
+&#x20;Once you see pong from both containers, you've completed the managed-node setup and connectivity portion of Practical 6.
+
+
+**Important:** These are lightweight Docker containers, not full Ubuntu virtual machines. They work for SSH and most Ansible package/copy tasks, but demonstrating Apache being enabled as a system service may require additional service-management configuration.
+
+
+## **If Docker says the container name already exists**
+
+
+Check:
+docker ps -a
+
+
+If web1 and web2 already exist and are stopped, restart them:
+docker start web1 web2
+
+
+You don't need to recreate them.
+
+
+**Next step:** Run docker ps in Ubuntu WSL. Once both web1 and web2 appear as running, proceed with ansible all -i inventory.ini -m ping, and you'll be ready to write your Practical 6 Playbook.
+
+Step 8 — Create the webpage
+nano index.html
+
+
+
+
+Paste:
+<h1>Hello from Ansible</h1>
+
+
+
+
+Save and exit.
+Step 9 — Create the Playbook
+nano install-packages.yml
+
+
+
+
+Paste:
+---
+name: Setup Web Servers
+  hosts: webservers
+  become: yes
+
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+
+    - name: Install packages
+      apt:
+        name:
+          - apache2
+          - curl
+          - git
+          - vim
+        state: present
+
+
+    - name: Start Apache
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+
+    - name: Copy webpage
+      copy:
+        src: index.html
+        dest: /var/www/html/index.html
+
+
+
+
+Save.
+Step 10 — Execute the Playbook
+Run in WSL:
+ansible-playbook -i inventory.ini install-packages.yml --ask-become-pass
+
+
+
+
+Enter the remote sudo password when requested.
+
+
+Expected task names:
+TASK [Update apt cache]
+TASK [Install packages]
+TASK [Start Apache]
+TASK [Copy webpage]
+
+
+PLAY RECAP
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+again Pract 6# **Practical 6 — Create Two Ubuntu Docker Containers for Ansible**
+
+Since you're using **Windows 11 + Docker Desktop + WSL Ubuntu**, I'll show you exactly how to create two Ubuntu containers named `web1` and `web2`.
+
+These containers will act as your **Ansible Managed Nodes**.
+
+## **What we're creating**
+
+## **Step 1 — Open Ubuntu WSL**
+
+Open **Ubuntu** from the Windows Start menu.
+
+Make sure Docker Desktop is running.
+
+In Docker Desktop, go to **Settings → Resources → WSL Integration**, enable your Ubuntu distribution, and click Apply & Restart.
+
+In your Ubuntu terminal, run:
+
+```
+docker --version
+docker ps
+```
+
+If these commands work, you're ready.
+
+## **Step 2 — Create a project folder**
+
+Run the following in Ubuntu:
+
+```
+mkdir -p ~/ansible-lab/node
+cd ~/ansible-lab
+```
+
+Check your location:
+
+```
+pwd
+```
+
+Expected:
+
+```
+/home/yourusername/ansible-lab
+```
+
+## **Step 3 — Create an SSH key**
+
+Ansible needs SSH to connect to the containers.
+
+Run:
+
+```
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+```
+
+If it says the key already exists, do not overwrite it. You can reuse the existing key.
+
+Copy the public key into your Docker project:
+
+```
+cp ~/.ssh/id_ed25519.pub node/
+```
+
+Your folder should now contain:
+
+```
+ansible-lab/
+└── node/
+    └── id_ed25519.pub
+```
+
+## **Step 4 — Create a Dockerfile**
+
+Run:
+
+```
+nano node/Dockerfile
+```
+
+Paste:
+
+```
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+    apt-get install -y openssh-server python3 sudo && \
+    useradd -m -s /bin/bash ansible && \
+    echo 'ansible ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ansible && \
+    mkdir -p /var/run/sshd /home/ansible/.ssh
+
+COPY id_ed25519.pub /home/ansible/.ssh/authorized_keys
+
+RUN chown -R ansible:ansible /home/ansible/.ssh && \
+    chmod 700 /home/ansible/.ssh && \
+    chmod 600 /home/ansible/.ssh/authorized_keys
+
+EXPOSE 22 80
+
+CMD ["/usr/sbin/sshd", "-D"]
+```
+
+Save the file:
+
+1. Press `Ctrl + O`.
+2. Press Enter.
+3. Press `Ctrl + X`.
+
+This Dockerfile creates an Ubuntu container with SSH, Python, and a user named `ansible` who can run sudo without a password. It is for a local practical lab only.
+
+## **Step 5 — Build the Ubuntu image**
+
+Make sure you're inside `~/ansible-lab`.
+
+Run:
+
+```
+docker build -t ansible-node ./node
+```
+
+Docker will download Ubuntu 22.04 and install the packages.
+
+Verify the image:
+
+```
+docker images
+```
+
+You should see an image named:
+
+```
+ansible-node
+```
+
+## **Step 6 — Create Ubuntu container 1 (web1)**
+
+Run:
+
+```
+docker run -d --name web1 -p 2221:22 -p 8091:80 ansible-node
+```
+
+This creates your first Ubuntu container.
+
+| Port | Purpose        |
+| ---- | -------------- |
+| 2221 | SSH connection |
+| 8091 | Apache webpage |
+
+## **Step 7 — Create Ubuntu container 2 (web2)**
+
+Run:
+
+```
+docker run -d --name web2 -p 2222:22 -p 8092:80 ansible-node
+```
+
+Now you have two separate Ubuntu containers.
+
+## **Step 8 — Verify both containers**
+
+Run:
+
+```
+docker ps
+```
+
+Expected output will resemble:
+
+```
+NAMES   IMAGE          PORTS
+web1    ansible-node   2221->22, 8091->80
+web2    ansible-node   2222->22, 8092->80
+```
+
+**Expected container status**
+
+Running
+
+**web1**
+
+Ubuntu 22.04 • SSH 2221 • HTTP 8091
+
+**web2**
+
+Ubuntu 22.04 • SSH 2222 • HTTP 8092
+
+Illustrative status. Confirm both are running using `docker ps`.
+
+## **Step 9 — Enter the Ubuntu containers**
+
+To enter the first container:
+
+```
+docker exec -it web1 bash
+```
+
+Check its operating system:
+
+```
+cat /etc/os-release
+```
+
+Expected:
+
+```
+PRETTY_NAME="Ubuntu 22.04.x LTS"
+```
+
+Exit:
+
+```
+exit
+```
+
+To enter the second container:
+
+```
+docker exec -it web2 bash
+```
+
+Exit again using `exit`.
+
+## **Step 10 — Test SSH connections**
+
+From your **WSL Ubuntu terminal**, run:
+
+```
+ssh -p 2221 ansible@localhost hostname
+```
+
+Accept the host key when prompted, after confirming you're connecting to your own container.
+
+Then:
+
+```
+ssh -p 2222 ansible@localhost hostname
+```
+
+Both commands should connect and print their respective container hostnames.
+
+These two containers are now ready to act as Ansible managed nodes.
+
+## **Step 11 — Prepare Ansible inventory**
+
+Create the inventory file:
+
+```
+cd ~/ansible-lab
+nano inventory.ini
+```
+
+Paste:
+
+```
+[webservers]
+web1 ansible_host=127.0.0.1 ansible_port=2221
+web2 ansible_host=127.0.0.1 ansible_port=2222
+
+[webservers:vars]
+ansible_user=ansible
+ansible_python_interpreter=/usr/bin/python3
+```
+
+Save the file.
+
+Install Ansible in WSL if you haven't already:
+
+```
+sudo apt update
+sudo apt install ansible -y
+```
+
+Test both containers:
+
+```
+ansible all -i inventory.ini -m ping
+```
+
+Expected:
+
+```
+web1 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+
+web2 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+&#x20;Once you see `pong` from both containers, you've completed the managed-node setup and connectivity portion of Practical 6.
+
+**Important:** These are lightweight Docker containers, not full Ubuntu virtual machines. They work for SSH and most Ansible package/copy tasks, but demonstrating Apache being *enabled as a system service* may require additional service-management configuration.
+
+## **If Docker says the container name already exists**
+
+Check:
+
+```
+docker ps -a
+```
+
+If `web1` and `web2` already exist and are stopped, restart them:
+
+```
+docker start web1 web2
+```
+
+You don't need to recreate them.
+
+**Next step:** Run `docker ps` in Ubuntu WSL. Once both `web1` and `web2` appear as running, proceed with `ansible all -i inventory.ini -m ping`, and you'll be ready to write your Practical 6 Playbook.
+
+
+Step 8 — Create the webpage
+nano index.html
+
+
+Paste:
+<h1>Hello from Ansible</h1>
+
+
+Save and exit.
+Step 9 — Create the Playbook
+nano install-packages.yml
+
+
+Paste:
+---
+- name: Setup Web Servers
+  hosts: webservers
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install packages
+      apt:
+        name:
+          - apache2
+          - curl
+          - git
+          - vim
+        state: present
+
+    - name: Start Apache
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Copy webpage
+      copy:
+        src: index.html
+        dest: /var/www/html/index.html
+
+
+Save.
+Step 10 — Execute the Playbook
+Run in WSL:
+ansible-playbook -i inventory.ini install-packages.yml --ask-become-pass
+
+
+Enter the remote sudo password when requested.
+
+Expected task names:
+TASK [Update apt cache]
+TASK [Install packages]
+TASK [Start Apache]
+TASK [Copy webpage]
+
+PLAY RECAP
+
+
